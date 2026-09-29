@@ -1,0 +1,16 @@
+{
+  "projectName": "test-pro",
+  "host": "test-pro.app.vayi.cn",
+  "services": [
+    {
+      "name": "app",
+      "context": ".",
+      "dockerfile": "Dockerfile",
+      "image": "test-pro",
+      "containerPort": 8000,
+      "servicePort": 8000,
+      "path": "/",
+      "expose": true
+    }
+  ]
+}

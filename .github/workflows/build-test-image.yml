@@ -22,7 +22,6 @@ concurrency:
 env:
   REGISTRY: swr.cn-south-1.myhuaweicloud.com
   IMAGE_NAMESPACE: vayi
-  IMAGE_NAME: test-pro
 
 jobs:
   build:
@@ -41,6 +40,10 @@ jobs:
           IMAGE_TAG: ${{ inputs.image_tag }}
         run: test -n "$IMAGE_TAG" && [[ "$IMAGE_TAG" =~ ^[A-Za-z0-9._-]+$ ]]
 
+      - name: Read image name
+        id: config
+        run: echo "image_name=$(jq -r '.services[0].image' .deploy/deploy.json)" >> "$GITHUB_OUTPUT"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -58,7 +61,7 @@ jobs:
           file: ./Dockerfile
           push: true
           provenance: false
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ env.IMAGE_NAME }}:${{ inputs.image_tag }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ steps.config.outputs.image_name }}:${{ inputs.image_tag }}
           cache-from: type=gha,scope=test-pro-image
           cache-to: type=gha,mode=max,scope=test-pro-image
           labels: |
@@ -69,7 +72,7 @@ jobs:
         run: |
           {
             echo "## Test image"
-            echo "- Repository: \`${REGISTRY}/${IMAGE_NAMESPACE}/${IMAGE_NAME}\`"
+            echo "- Repository: \`${REGISTRY}/${IMAGE_NAMESPACE}/${{ steps.config.outputs.image_name }}\`"
             echo "- Tag: \`${{ inputs.image_tag }}\`"
             echo "- Source ref: \`${{ inputs.source_ref }}\`"
             echo "- Deployment: not run"

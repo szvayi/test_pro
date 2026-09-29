@@ -29,7 +29,6 @@ concurrency:
 env:
   REGISTRY: swr.cn-south-1.myhuaweicloud.com
   IMAGE_NAMESPACE: vayi
-  IMAGE_NAME: test-pro
 
 jobs:
   deploy:
@@ -39,6 +38,9 @@ jobs:
     environment: test
 
     steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
       - name: Validate deployment inputs
         env:
           IMAGE_TAG: ${{ inputs.image_tag }}
@@ -51,6 +53,10 @@ jobs:
           test -n "$CONTAINER_NAME" && [[ "$CONTAINER_NAME" =~ ^[a-z0-9][a-z0-9_-]*$ ]]
           test "$HOST_PORT" -ge 1 && test "$HOST_PORT" -le 65535
           [[ "$SMOKE_URL" =~ ^https?://[A-Za-z0-9._:-]+$ ]]
+
+      - name: Read image name
+        id: config
+        run: echo "image_name=$(jq -r '.services[0].image' .deploy/deploy.json)" >> "$GITHUB_OUTPUT"
 
       - name: Prepare SSH trust
         env:
@@ -70,6 +76,7 @@ jobs:
           TEST_SSH_KNOWN_HOSTS: ${{ runner.temp }}/test-host-known_hosts
           SWR_USERNAME: ${{ secrets.SWR_USERNAME }}
           SWR_PASSWORD: ${{ secrets.SWR_PASSWORD }}
+          IMAGE_NAME: ${{ steps.config.outputs.image_name }}
         run: |
           set -euo pipefail
           test -n "$TEST_SSH_HOST"
@@ -90,6 +97,7 @@ jobs:
           IMAGE_TAG: ${{ inputs.image_tag }}
           CONTAINER_NAME: ${{ inputs.container_name }}
           HOST_PORT: ${{ inputs.host_port }}
+          IMAGE_NAME: ${{ steps.config.outputs.image_name }}
         run: |
           set -euo pipefail
           ssh_args=(-i "$RUNNER_TEMP/test-host-key" -o UserKnownHostsFile="$RUNNER_TEMP/test-host-known_hosts" -o StrictHostKeyChecking=yes -p "${TEST_SSH_PORT:-22}")
