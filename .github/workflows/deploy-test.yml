@@ -95,13 +95,14 @@ jobs:
           ssh_args=(-i "$RUNNER_TEMP/test-host-key" -o UserKnownHostsFile="$RUNNER_TEMP/test-host-known_hosts" -o StrictHostKeyChecking=yes -p "${TEST_SSH_PORT:-22}")
           image="$REGISTRY/$IMAGE_NAMESPACE/$IMAGE_NAME:$IMAGE_TAG"
           ssh "${ssh_args[@]}" "$TEST_SSH_USER@$TEST_SSH_HOST" \
-            "docker pull '$image' && docker rm -f '$CONTAINER_NAME' >/dev/null 2>&1 || true; docker run -d --name '$CONTAINER_NAME' --restart unless-stopped -p '$HOST_PORT:8000' '$image'"
+            "set -eu; docker pull '$image'; docker rm -f '$CONTAINER_NAME' >/dev/null 2>&1 || true; docker run -d --name '$CONTAINER_NAME' --restart unless-stopped -p '$HOST_PORT:8000' '$image'"
 
       - name: Smoke test from test host
         env:
           TEST_SSH_HOST: ${{ secrets.TEST_SSH_HOST }}
           TEST_SSH_PORT: ${{ secrets.TEST_SSH_PORT }}
           TEST_SSH_USER: ${{ secrets.TEST_SSH_USER }}
+          CONTAINER_NAME: ${{ inputs.container_name }}
           SMOKE_URL: ${{ inputs.smoke_url }}
         run: |
           set -euo pipefail
