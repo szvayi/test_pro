@@ -1,9 +1,11 @@
+# syntax=docker/dockerfile:1.7
+
 # Stage 1: build the Vue application.
 FROM node:20-alpine AS frontend-builder
 
 WORKDIR /build/web
 COPY web/package*.json ./
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm npm ci --prefer-offline --no-audit --no-fund
 COPY web/ ./
 RUN npm run build
 
