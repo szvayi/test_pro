@@ -6,31 +6,34 @@ on:
       image_tag:
         description: Existing immutable SWR tag from Build Test Image
         required: true
-      project_name:
-        description: Isolated Kestra/Kubernetes project name
+      container_name:
+        description: Docker container name on the test host
         required: true
-        default: test-pro-test
-      host:
-        description: Isolated test host with DNS/Ingress already configured
+        default: test-pro
+      host_port:
+        description: Host port mapped to container port 8000
         required: true
-        default: test-pro-test.app.vayi.cn
+        default: "18000"
+      smoke_url:
+        description: URL checked from the test host, for example http://127.0.0.1:18000
+        required: true
+        default: http://127.0.0.1:18000
 
 permissions:
   contents: read
 
 concurrency:
-  group: test-deploy-${{ inputs.project_name }}
+  group: test-docker-${{ inputs.container_name }}
   cancel-in-progress: false
 
 env:
   REGISTRY: swr.cn-south-1.myhuaweicloud.com
   IMAGE_NAMESPACE: vayi
   IMAGE_NAME: test-pro
-  KESTRA_API_URL: https://kestra.vayi.cn
 
 jobs:
   deploy:
-    name: Deploy and smoke test
+    name: Deploy with Docker and smoke test
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: test
@@ -39,88 +42,90 @@ jobs:
       - name: Validate deployment inputs
         env:
           IMAGE_TAG: ${{ inputs.image_tag }}
-          PROJECT_NAME: ${{ inputs.project_name }}
-          APP_HOST: ${{ inputs.host }}
+          CONTAINER_NAME: ${{ inputs.container_name }}
+          HOST_PORT: ${{ inputs.host_port }}
+          SMOKE_URL: ${{ inputs.smoke_url }}
         run: |
           set -euo pipefail
           test -n "$IMAGE_TAG" && [[ "$IMAGE_TAG" =~ ^[A-Za-z0-9._-]+$ ]]
-          test -n "$PROJECT_NAME" && [[ "$PROJECT_NAME" =~ ^[a-z0-9-]+$ ]]
-          test -n "$APP_HOST" && [[ "$APP_HOST" =~ ^[A-Za-z0-9.-]+$ ]]
+          test -n "$CONTAINER_NAME" && [[ "$CONTAINER_NAME" =~ ^[a-z0-9][a-z0-9_-]*$ ]]
+          test "$HOST_PORT" -ge 1 && test "$HOST_PORT" -le 65535
+          [[ "$SMOKE_URL" =~ ^https?://[A-Za-z0-9._:-]+$ ]]
 
-      - name: Generate deployment payload
+      - name: Prepare SSH trust
         env:
+          TEST_SSH_KNOWN_HOSTS: ${{ secrets.TEST_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$TEST_SSH_KNOWN_HOSTS"
+          printf '%s\n' "$TEST_SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/test-host-known_hosts"
+          chmod 600 "$RUNNER_TEMP/test-host-known_hosts"
+
+      - name: Login to SWR on test host
+        env:
+          TEST_SSH_HOST: ${{ secrets.TEST_SSH_HOST }}
+          TEST_SSH_PORT: ${{ secrets.TEST_SSH_PORT }}
+          TEST_SSH_USER: ${{ secrets.TEST_SSH_USER }}
+          TEST_SSH_PRIVATE_KEY: ${{ secrets.TEST_SSH_PRIVATE_KEY }}
+          TEST_SSH_KNOWN_HOSTS: ${{ runner.temp }}/test-host-known_hosts
+          SWR_USERNAME: ${{ secrets.SWR_USERNAME }}
+          SWR_PASSWORD: ${{ secrets.SWR_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$TEST_SSH_HOST"
+          test -n "$TEST_SSH_USER"
+          test -n "$SWR_USERNAME"
+          test -n "$SWR_PASSWORD"
+          printf '%s\n' "$TEST_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/test-host-key"
+          chmod 600 "$RUNNER_TEMP/test-host-key"
+          ssh_args=(-i "$RUNNER_TEMP/test-host-key" -o UserKnownHostsFile="$TEST_SSH_KNOWN_HOSTS" -o StrictHostKeyChecking=yes -p "${TEST_SSH_PORT:-22}")
+          printf '%s' "$SWR_PASSWORD" | ssh "${ssh_args[@]}" "$TEST_SSH_USER@$TEST_SSH_HOST" \
+            "docker login '$REGISTRY' --username '$SWR_USERNAME' --password-stdin"
+
+      - name: Pull and replace test container
+        env:
+          TEST_SSH_HOST: ${{ secrets.TEST_SSH_HOST }}
+          TEST_SSH_PORT: ${{ secrets.TEST_SSH_PORT }}
+          TEST_SSH_USER: ${{ secrets.TEST_SSH_USER }}
           IMAGE_TAG: ${{ inputs.image_tag }}
-          PROJECT_NAME: ${{ inputs.project_name }}
-          APP_HOST: ${{ inputs.host }}
+          CONTAINER_NAME: ${{ inputs.container_name }}
+          HOST_PORT: ${{ inputs.host_port }}
         run: |
           set -euo pipefail
-          jq -n \
-            --arg projectName "$PROJECT_NAME" \
-            --arg host "$APP_HOST" \
-            --arg imageRepository "${REGISTRY}/${IMAGE_NAMESPACE}/${IMAGE_NAME}" \
-            --arg imageTag "$IMAGE_TAG" \
-            '{
-              projectName: $projectName,
-              host: $host,
-              services: [{
-                name: "app",
-                path: "/",
-                image: { repository: $imageRepository, tag: $imageTag },
-                expose: true,
-                servicePort: 8000,
-                containerPort: 8000
-              }]
-            }' > deploy-payload.json
-          jq . deploy-payload.json
+          ssh_args=(-i "$RUNNER_TEMP/test-host-key" -o UserKnownHostsFile="$RUNNER_TEMP/test-host-known_hosts" -o StrictHostKeyChecking=yes -p "${TEST_SSH_PORT:-22}")
+          image="$REGISTRY/$IMAGE_NAMESPACE/$IMAGE_NAME:$IMAGE_TAG"
+          ssh "${ssh_args[@]}" "$TEST_SSH_USER@$TEST_SSH_HOST" \
+            "docker pull '$image' && docker rm -f '$CONTAINER_NAME' >/dev/null 2>&1 || true; docker run -d --name '$CONTAINER_NAME' --restart unless-stopped -p '$HOST_PORT:8000' '$image'"
 
-      - name: Trigger Kestra deployment
-        id: trigger
+      - name: Smoke test from test host
         env:
-          KESTRA_WEBHOOK_URL: ${{ secrets.KESTRA_WEBHOOK_URL }}
+          TEST_SSH_HOST: ${{ secrets.TEST_SSH_HOST }}
+          TEST_SSH_PORT: ${{ secrets.TEST_SSH_PORT }}
+          TEST_SSH_USER: ${{ secrets.TEST_SSH_USER }}
+          SMOKE_URL: ${{ inputs.smoke_url }}
         run: |
           set -euo pipefail
-          test -n "$KESTRA_WEBHOOK_URL"
-          response=$(curl --fail-with-body --retry 2 --retry-delay 2 -sS \
-            -X POST "$KESTRA_WEBHOOK_URL" \
-            -H "Content-Type: application/json" \
-            --data-binary @deploy-payload.json)
-          execution_id=$(echo "$response" | jq -r '.id // .executionId // empty')
-          test -n "$execution_id"
-          echo "execution_id=$execution_id" >> "$GITHUB_OUTPUT"
-
-      - name: Wait for Kestra deployment
-        env:
-          EXECUTION_ID: ${{ steps.trigger.outputs.execution_id }}
-          KESTRA_USER: ${{ secrets.KESTRA_USER }}
-          KESTRA_PASSWORD: ${{ secrets.KESTRA_PASSWORD }}
-          APP_HOST: ${{ inputs.host }}
-        run: |
-          set -euo pipefail
-          test -n "$KESTRA_USER"
-          test -n "$KESTRA_PASSWORD"
-          execution_url="${KESTRA_API_URL%/}/api/v1/main/executions/$EXECUTION_ID"
-          logs_url="${KESTRA_API_URL%/}/api/v1/main/logs/$EXECUTION_ID"
-          for attempt in $(seq 1 120); do
-            execution=$(curl --fail-with-body -sS -u "$KESTRA_USER:$KESTRA_PASSWORD" "$execution_url")
-            state=$(echo "$execution" | jq -r '.state.current // empty')
-            echo "Kestra state ($attempt/120): ${state:-UNKNOWN}"
-            case "$state" in
-              SUCCESS) break ;;
-              FAILED|CANCELLED|KILLED|WARNING)
-                curl --fail-with-body -sS -u "$KESTRA_USER:$KESTRA_PASSWORD" "$logs_url" | jq .
-                exit 1
-                ;;
-            esac
+          ssh_args=(-i "$RUNNER_TEMP/test-host-key" -o UserKnownHostsFile="$RUNNER_TEMP/test-host-known_hosts" -o StrictHostKeyChecking=yes -p "${TEST_SSH_PORT:-22}")
+          for attempt in $(seq 1 12); do
+            if ssh "${ssh_args[@]}" "$TEST_SSH_USER@$TEST_SSH_HOST" "curl --fail --silent --show-error '$SMOKE_URL/healthz'"; then
+              break
+            fi
+            if [[ "$attempt" == 12 ]]; then
+              ssh "${ssh_args[@]}" "$TEST_SSH_USER@$TEST_SSH_HOST" "docker logs '$CONTAINER_NAME'" || true
+              exit 1
+            fi
             sleep 5
           done
-          test "${state:-}" = SUCCESS
+          ssh "${ssh_args[@]}" "$TEST_SSH_USER@$TEST_SSH_HOST" "curl --fail --silent --show-error '$SMOKE_URL/api/health'"
+          ssh "${ssh_args[@]}" "$TEST_SSH_USER@$TEST_SSH_HOST" "curl --fail --silent --show-error '$SMOKE_URL/api/routes'"
 
-      - name: Smoke test isolated environment
+      - name: Logout from SWR on test host
+        if: always()
         env:
-          APP_HOST: ${{ inputs.host }}
+          TEST_SSH_HOST: ${{ secrets.TEST_SSH_HOST }}
+          TEST_SSH_PORT: ${{ secrets.TEST_SSH_PORT }}
+          TEST_SSH_USER: ${{ secrets.TEST_SSH_USER }}
         run: |
           set -euo pipefail
-          curl --fail --silent --show-error --retry 12 --retry-delay 5 "https://${APP_HOST}/healthz"
-          curl --fail --silent --show-error --retry 12 --retry-delay 5 "https://${APP_HOST}/api/health"
-          curl --fail --silent --show-error --retry 12 --retry-delay 5 "https://${APP_HOST}/api/routes"
-          echo "Test deployment smoke checks passed: https://${APP_HOST}"
+          ssh_args=(-i "$RUNNER_TEMP/test-host-key" -o UserKnownHostsFile="$RUNNER_TEMP/test-host-known_hosts" -o StrictHostKeyChecking=yes -p "${TEST_SSH_PORT:-22}")
+          ssh "${ssh_args[@]}" "$TEST_SSH_USER@$TEST_SSH_HOST" "docker logout '$REGISTRY'" || true
