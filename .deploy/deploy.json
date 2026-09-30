@@ -1,6 +1,7 @@
 {
   "projectName": "test-pro",
   "host": "test-pro.app.vayi.cn",
+  "jobs": [],
   "services": [
     {
       "name": "app",
@@ -10,7 +11,14 @@
       "containerPort": 8000,
       "servicePort": 8000,
       "path": "/",
-      "expose": true
+      "expose": true,
+      "envFrom": [
+        {
+          "secretRef": {
+            "name": "test-pro-app-runtime"
+          }
+        }
+      ]
     }
   ]
 }

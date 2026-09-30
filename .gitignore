@@ -13,3 +13,6 @@ wheels/
 web/node_modules
 
 secret.txt
+.env
+.env.*
+!.env.example

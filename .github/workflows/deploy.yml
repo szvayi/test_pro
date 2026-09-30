@@ -58,6 +58,13 @@ jobs:
             test -f "$dockerfile"
           done < <(jq -c '.services[]' .deploy/deploy.json)
 
+          while IFS= read -r job; do
+            job_image=$(jq -r '.image' <<< "$job")
+            jq -e --arg image "$job_image" \
+              'any(.services[]; .image == $image)' \
+              .deploy/deploy.json >/dev/null
+          done < <(jq -c '.jobs // []' .deploy/deploy.json)
+
           matrix=$(jq -c '{include: .services}' .deploy/deploy.json)
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "host=$(jq -r '.host' .deploy/deploy.json)" >> "$GITHUB_OUTPUT"
@@ -132,6 +139,14 @@ jobs:
             '{
               projectName: .projectName,
               host: .host,
+              jobs: [
+                (.jobs // [])[] as $job
+                | ($job | del(.image)
+                  | .image = {
+                      repository: ($registry + "/" + $namespace + "/" + $job.image),
+                      tag: $tag
+                    })
+              ],
               services: [
                 .services[] as $service
                 | ($service | del(.context, .dockerfile, .image)

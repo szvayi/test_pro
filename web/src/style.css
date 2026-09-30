@@ -18,7 +18,7 @@ h1 { margin: 15px 0 12px; font-size: clamp(34px, 6vw, 64px); line-height: 1.05; 
 .hero-mark { align-self: center; color: #9ce7ce; font-size: 100px; opacity: .7; }
 .refresh-button { margin-top: 30px; padding: 11px 18px; border: 0; border-radius: 10px; color: #164858; background: #d9f6e9; font-weight: 700; cursor: pointer; }
 .refresh-button:hover { background: #fff; }
-.status-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px; margin: 22px 0; }
+.status-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin: 22px 0; }
 .info-card, .routes-panel { border: 1px solid #d8e8e3; border-radius: 20px; background: rgb(255 255 255 / 82%); box-shadow: 0 8px 24px rgb(43 85 87 / 6%); }
 .info-card { padding: 24px; }
 .card-heading, .panel-heading { display: flex; justify-content: space-between; align-items: center; }

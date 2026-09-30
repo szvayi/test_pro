@@ -2,6 +2,7 @@
 import { onMounted, ref } from 'vue'
 
 const health = ref(null)
+const readiness = ref(null)
 const routes = ref([])
 const loading = ref(true)
 const error = ref('')
@@ -11,9 +12,10 @@ async function loadApiData() {
   error.value = ''
 
   try {
-    const [healthResponse, routesResponse] = await Promise.all([
+    const [healthResponse, routesResponse, readinessResponse] = await Promise.all([
       fetch('/api/health'),
       fetch('/api/routes'),
+      fetch('/readyz'),
     ])
 
     if (!healthResponse.ok || !routesResponse.ok) {
@@ -22,6 +24,16 @@ async function loadApiData() {
 
     health.value = await healthResponse.json()
     routes.value = (await routesResponse.json()).items
+
+    if (readinessResponse.ok) {
+      readiness.value = await readinessResponse.json()
+    } else {
+      const readinessError = await readinessResponse.json().catch(() => ({}))
+      readiness.value = {
+        status: 'not_ready',
+        message: readinessError.detail || '数据库尚未就绪',
+      }
+    }
   } catch (requestError) {
     error.value = requestError.message || '无法连接到 API 服务'
   } finally {
@@ -65,6 +77,15 @@ onMounted(loadApiData)
         </div>
         <strong>API 清单</strong>
         <p>接口信息由后端动态返回。</p>
+      </article>
+
+      <article class="info-card readiness-card">
+        <div class="card-heading">
+          <span>数据库状态</span>
+          <span class="status-dot" :class="{ online: readiness?.status === 'ok' }"></span>
+        </div>
+        <strong>{{ readiness?.status === 'ok' ? '已就绪' : '未就绪' }}</strong>
+        <p>{{ readiness?.message || '正在检查数据库连接…' }}</p>
       </article>
     </section>
 

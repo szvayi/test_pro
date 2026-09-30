@@ -1,7 +1,10 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from dotenv import load_dotenv
+from database import check_database_connection
 
+load_dotenv()
 app = FastAPI(
     title="Test Pro API",
     description="用于前端欢迎页演示的 FastAPI 服务",
@@ -25,7 +28,18 @@ def health_check() -> dict[str, str]:
 
 @app.get("/healthz", tags=["系统"])
 def healthz() -> dict[str, str]:
-    """供部署平台进行存活和就绪检查。"""
+    """供部署平台进行存活检查，不依赖数据库。"""
+    return {"status": "ok"}
+
+
+@app.get("/readyz", tags=["系统"])
+async def readyz() -> dict[str, str]:
+    """供部署平台进行就绪检查，并验证数据库连通性。"""
+    if not await check_database_connection():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database is not ready",
+        )
     return {"status": "ok"}
 
 
@@ -46,6 +60,12 @@ def api_routes() -> dict[str, object]:
                 "name": "API 接口列表",
                 "description": "获取当前服务提供的接口列表",
             },
+            {
+                "method": "GET",
+                "path": "/readyz",
+                "name": "就绪检查",
+                "description": "检查服务和数据库是否已经准备好",
+            },
         ]
     }
 
@@ -57,7 +77,6 @@ app.mount(
     StaticFiles(directory="web/dist", html=True, check_dir=False),
     name="web",
 )
-
 
 if __name__ == '__main__':
     import uvicorn

@@ -17,9 +17,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 COPY pyproject.toml ./
-RUN pip install --no-cache-dir fastapi "uvicorn[standard]"
+RUN pip install --no-cache-dir \
+    "fastapi>=0.115.0" \
+    "asyncpg>=0.30.0" \
+    "sqlalchemy>=2.0.0" \
+    "uvicorn[standard]>=0.30.0"
 
 COPY main.py ./
+COPY database.py ./
 COPY --from=frontend-builder /build/web/dist ./web/dist
 
 EXPOSE 8000
