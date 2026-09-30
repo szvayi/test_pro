@@ -1,0 +1,391 @@
+name: Deploy PR Preview
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-deploy-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: swr.cn-south-1.myhuaweicloud.com
+  IMAGE_NAMESPACE: vayi
+
+jobs:
+  prepare:
+    name: Prepare PR deployment
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      project_name: ${{ steps.metadata.outputs.project_name }}
+      namespace: ${{ steps.metadata.outputs.namespace }}
+      host: ${{ steps.metadata.outputs.host }}
+      image_tag: ${{ steps.metadata.outputs.image_tag }}
+      matrix: ${{ steps.metadata.outputs.matrix }}
+
+    steps:
+      - name: Check out PR source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Validate deployment definition
+        run: |
+          set -euo pipefail
+          npx --yes ajv-cli@5 validate \
+            -s .deploy/deploy.schema.json \
+            -d .deploy/deploy.json \
+            --spec=draft2020
+
+          test "$(jq '.services | length' .deploy/deploy.json)" -ge 1
+          test "$(jq '[.services[].name] | unique | length' .deploy/deploy.json)" \
+            -eq "$(jq '.services | length' .deploy/deploy.json)"
+
+          while IFS= read -r service; do
+            context=$(jq -r '.context' <<< "$service")
+            dockerfile=$(jq -r '.dockerfile' <<< "$service")
+            test -d "$context"
+            test -f "$dockerfile"
+          done < <(jq -c '.services[]' .deploy/deploy.json)
+
+          while IFS= read -r job; do
+            job_image=$(jq -r '.image' <<< "$job")
+            jq -e --arg image "$job_image" \
+              'any(.services[]; .image == $image)' \
+              .deploy/deploy.json >/dev/null
+          done < <(jq -c '.jobs // []' .deploy/deploy.json)
+
+      - name: Calculate PR deployment metadata
+        id: metadata
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+
+          short_sha="${PR_HEAD_SHA:0:7}"
+          base_project_name=$(jq -r '.projectName' .deploy/deploy.json)
+          base_branch_project_name=$(git show "$BASE_SHA:.deploy/deploy.json" | jq -r '.projectName')
+          test "$base_project_name" != "null"
+          test "$base_branch_project_name" != "null"
+          test -n "$base_project_name"
+          test "$base_project_name" = "$base_branch_project_name"
+          [[ "$base_project_name" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]
+
+          project_name="${base_project_name}-pr-${PR_NUMBER}"
+          namespace="vayi-pr-${PR_NUMBER}"
+          host="${project_name}.app.vayi.cn"
+          image_tag="pr-${PR_NUMBER}-${short_sha}"
+          matrix=$(jq -c '{include: .services}' .deploy/deploy.json)
+
+          [[ "$project_name" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]
+          [[ "$namespace" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]
+          [[ "$host" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?\.app\.vayi\.cn$ ]]
+          test "${#project_name}" -le 63
+          test "${#namespace}" -le 63
+
+          printf 'project_name=%s\n' "$project_name" >> "$GITHUB_OUTPUT"
+          printf 'namespace=%s\n' "$namespace" >> "$GITHUB_OUTPUT"
+          printf 'host=%s\n' "$host" >> "$GITHUB_OUTPUT"
+          printf 'image_tag=%s\n' "$image_tag" >> "$GITHUB_OUTPUT"
+          printf 'matrix=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build and push PR image
+    if: >-
+      github.event.action != 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: test
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+
+    steps:
+      - name: Check out PR source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to SWR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.SWR_USERNAME }}
+          password: ${{ secrets.SWR_PASSWORD }}
+
+      - name: Build and push PR image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./${{ matrix.context }}
+          file: ./${{ matrix.dockerfile }}
+          push: true
+          provenance: false
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}:${{ needs.prepare.outputs.image_tag }}
+          cache-from: type=gha,scope=pr-image-${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=pr-image-${{ matrix.image }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.event.pull_request.head.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+
+  deploy:
+    name: Deploy PR to Kubernetes
+    if: >-
+      github.event.action != 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: test
+
+    steps:
+      - name: Check out PR source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Generate PR deployment payload
+        env:
+          PROJECT_NAME: ${{ needs.prepare.outputs.project_name }}
+          NAMESPACE: ${{ needs.prepare.outputs.namespace }}
+          HOST: ${{ needs.prepare.outputs.host }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
+          IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+
+          short_sha="${COMMIT_SHA:0:7}"
+          jq \
+            --arg project_name "$PROJECT_NAME" \
+            --arg namespace "$NAMESPACE" \
+            --arg host "$HOST" \
+            --arg environment "pr" \
+            --argjson pr_number "$PR_NUMBER" \
+            --arg commit_sha "$short_sha" \
+            --arg registry "$REGISTRY" \
+            --arg image_namespace "$IMAGE_NAMESPACE" \
+            --arg tag "$IMAGE_TAG" \
+            '(
+              .services
+              | map(
+                  . as $service
+                  | ($service | del(.context, .dockerfile, .image)
+                    | .image = {
+                        repository: ($registry + "/" + $image_namespace + "/" + $service.image),
+                        tag: $tag
+                      })
+                )
+            ) as $services
+            | {
+                operation: "deploy",
+                projectName: $project_name,
+                namespace: $namespace,
+                host: $host,
+                environment: $environment,
+                prNumber: $pr_number,
+                commitSha: $commit_sha,
+                services: $services,
+                jobs: [
+                  (.jobs // [])[] as $job
+                  | ($job | del(.image)
+                    | .image = {
+                        repository: ($registry + "/" + $image_namespace + "/" + $job.image),
+                        tag: $tag
+                      })
+                ]
+              }' .deploy/deploy.json > deploy-payload.json
+
+          jq -e '
+            .operation == "deploy" and
+            (.projectName | type == "string") and
+            (.namespace | type == "string") and
+            (.host | type == "string") and
+            (.services | length >= 1) and
+            (.jobs | type == "array") and
+            all(.services[];
+              (.name | type == "string") and
+              (.image.repository | type == "string") and
+              (.image.tag | type == "string") and
+              (.containerPort | type == "number") and
+              (.servicePort | type == "number") and
+              (.expose | type == "boolean")
+            ) and
+            all(.jobs[];
+              (.name | type == "string") and
+              (.image.repository | type == "string") and
+              (.image.tag | type == "string")
+            )
+          ' deploy-payload.json >/dev/null
+          jq . deploy-payload.json
+
+      - name: Trigger PR Kestra deployment
+        id: trigger
+        env:
+          KESTRA_PR_WEBHOOK_URL: ${{ secrets.KESTRA_PR_WEBHOOK_URL }}
+        run: |
+          set -euo pipefail
+          test -n "$KESTRA_PR_WEBHOOK_URL"
+
+          response=$(curl --fail-with-body -sS \
+            -X POST "$KESTRA_PR_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            --data-binary @deploy-payload.json)
+
+          execution_id=$(echo "$response" | jq -r '.id // .executionId')
+          test -n "$execution_id"
+          test "$execution_id" != "null"
+          echo "execution_id=$execution_id" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for PR Kestra deployment
+        env:
+          EXECUTION_ID: ${{ steps.trigger.outputs.execution_id }}
+          KESTRA_API_URL: https://kestra.vayi.cn
+          KESTRA_USER: ${{ secrets.KESTRA_USER }}
+          KESTRA_PASSWORD: ${{ secrets.KESTRA_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$KESTRA_USER"
+          test -n "$KESTRA_PASSWORD"
+
+          for attempt in $(seq 1 120); do
+            execution=$(curl --fail-with-body -sS \
+              --user "$KESTRA_USER:$KESTRA_PASSWORD" \
+              "$KESTRA_API_URL/api/v1/main/executions/$EXECUTION_ID")
+            state=$(echo "$execution" | jq -r '.state.current // empty')
+            echo "Kestra state ($attempt/120): ${state:-UNKNOWN}"
+
+            case "$state" in
+              SUCCESS)
+                exit 0
+                ;;
+              FAILED|CANCELLED|KILLED|WARNING)
+                curl --fail-with-body -sS \
+                  --user "$KESTRA_USER:$KESTRA_PASSWORD" \
+                  "$KESTRA_API_URL/api/v1/main/logs/$EXECUTION_ID" | jq .
+                exit 1
+                ;;
+            esac
+            sleep 5
+          done
+
+          echo "Timed out waiting for Kestra execution: $EXECUTION_ID"
+          exit 1
+
+      - name: Verify PR application
+        env:
+          APP_HOST: ${{ needs.prepare.outputs.host }}
+        run: |
+          set -euo pipefail
+          app_url="https://${APP_HOST}"
+
+          for attempt in $(seq 1 24); do
+            if curl --fail --silent --show-error "$app_url/healthz" >/dev/null; then
+              break
+            fi
+            if [ "$attempt" -eq 24 ]; then
+              exit 1
+            fi
+            sleep 5
+          done
+
+          curl --fail --silent --show-error "$app_url/" >/dev/null
+          curl --fail --silent --show-error "$app_url/api/health"
+          curl --fail --silent --show-error "$app_url/api/routes"
+
+  cleanup:
+    name: Clean up PR Kubernetes environment
+    if: >-
+      github.event.action == 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: test
+
+    steps:
+      - name: Check out PR source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 1
+
+      - name: Trigger PR Kestra cleanup
+        env:
+          KESTRA_PR_WEBHOOK_URL: ${{ secrets.KESTRA_PR_WEBHOOK_URL }}
+          KESTRA_API_URL: https://kestra.vayi.cn
+          KESTRA_USER: ${{ secrets.KESTRA_USER }}
+          KESTRA_PASSWORD: ${{ secrets.KESTRA_PASSWORD }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test -n "$KESTRA_PR_WEBHOOK_URL"
+          test -n "$KESTRA_USER"
+          test -n "$KESTRA_PASSWORD"
+
+          short_sha="${PR_HEAD_SHA:0:7}"
+          base_project_name=$(jq -r '.projectName' .deploy/deploy.json)
+          test "$base_project_name" != "null"
+          test -n "$base_project_name"
+          project_name="${base_project_name}-pr-${PR_NUMBER}"
+          namespace="vayi-pr-${PR_NUMBER}"
+
+          jq -n \
+            --arg project_name "$project_name" \
+            --arg namespace "$namespace" \
+            --argjson pr_number "$PR_NUMBER" \
+            --arg commit_sha "$short_sha" \
+            '{
+              operation: "cleanup",
+              projectName: $project_name,
+              namespace: $namespace,
+              environment: "pr",
+              prNumber: $pr_number,
+              commitSha: $commit_sha
+            }' > cleanup-payload.json
+
+          jq . cleanup-payload.json
+          response=$(curl --fail-with-body -sS \
+            -X POST "$KESTRA_PR_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            --data-binary @cleanup-payload.json)
+
+          execution_id=$(echo "$response" | jq -r '.id // .executionId')
+          test -n "$execution_id"
+          test "$execution_id" != "null"
+
+          for attempt in $(seq 1 120); do
+            execution=$(curl --fail-with-body -sS \
+              --user "$KESTRA_USER:$KESTRA_PASSWORD" \
+              "$KESTRA_API_URL/api/v1/main/executions/$execution_id")
+            state=$(echo "$execution" | jq -r '.state.current // empty')
+            echo "Kestra cleanup state ($attempt/120): ${state:-UNKNOWN}"
+
+            case "$state" in
+              SUCCESS)
+                exit 0
+                ;;
+              FAILED|CANCELLED|KILLED|WARNING)
+                curl --fail-with-body -sS \
+                  --user "$KESTRA_USER:$KESTRA_PASSWORD" \
+                  "$KESTRA_API_URL/api/v1/main/logs/$execution_id" | jq .
+                exit 1
+                ;;
+            esac
+            sleep 5
+          done
+
+          echo "Timed out waiting for Kestra cleanup: $execution_id"
+          exit 1
