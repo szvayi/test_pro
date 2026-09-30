@@ -59,7 +59,7 @@ jobs:
             jq -e --arg image "$job_image" \
               'any(.services[]; .image == $image)' \
               .deploy/deploy.json >/dev/null
-          done < <(jq -c '.jobs // []' .deploy/deploy.json)
+          done < <(jq -c '(.jobs // [])[]' .deploy/deploy.json)
 
       - name: Calculate PR deployment metadata
         id: metadata

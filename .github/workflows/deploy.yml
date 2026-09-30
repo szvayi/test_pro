@@ -63,7 +63,7 @@ jobs:
             jq -e --arg image "$job_image" \
               'any(.services[]; .image == $image)' \
               .deploy/deploy.json >/dev/null
-          done < <(jq -c '.jobs // []' .deploy/deploy.json)
+          done < <(jq -c '(.jobs // [])[]' .deploy/deploy.json)
 
           matrix=$(jq -c '{include: .services}' .deploy/deploy.json)
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
@@ -156,6 +156,26 @@ jobs:
                     })
               ]
             }' .deploy/deploy.json > deploy-payload.json
+
+          jq -e '
+            (.projectName | type == "string") and
+            (.host | type == "string") and
+            (.services | length >= 1) and
+            (.jobs | type == "array") and
+            all(.services[];
+              (.name | type == "string") and
+              (.image.repository | type == "string") and
+              (.image.tag | type == "string") and
+              (.containerPort | type == "number") and
+              (.servicePort | type == "number") and
+              (.expose | type == "boolean")
+            ) and
+            all(.jobs[];
+              (.name | type == "string") and
+              (.image.repository | type == "string") and
+              (.image.tag | type == "string")
+            )
+          ' deploy-payload.json >/dev/null
 
           jq . deploy-payload.json
 
