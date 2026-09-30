@@ -72,13 +72,24 @@ test-pro
 
 ### 一次性任务和数据库迁移
 
-`jobs` 用于数据库迁移、初始化数据等一次性任务。当前项目没有数据库迁移依赖，因此默认保持为空：
+`jobs` 用于数据库迁移、初始化数据等一次性任务。当前项目暂未接入 PostgreSQL，先配置一个不改动外部数据的模拟迁移 Job，执行 SQLite 内存数据库的 `SELECT 1`：
 
 ```json
-"jobs": []
+"jobs": [
+  {
+    "name": "migrate",
+    "image": "test-pro",
+    "command": ["python", "-c"],
+    "args": [
+      "import sqlite3; connection = sqlite3.connect(':memory:'); connection.execute('SELECT 1'); print('migration check: SELECT 1 OK'); connection.close()"
+    ],
+    "backoffLimit": 1,
+    "ttlSecondsAfterFinished": 300
+  }
+]
 ```
 
-当镜像中加入迁移命令和数据库依赖后，可以按以下方式配置迁移任务。迁移任务通常复用应用服务镜像，并通过 Kubernetes Secret 注入数据库连接信息：
+接入真实 PostgreSQL 后，应将该命令替换为实际迁移命令。迁移任务通常复用应用服务镜像，并通过 Kubernetes Secret 注入数据库连接信息：
 
 ```json
 "jobs": [

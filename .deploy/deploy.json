@@ -1,7 +1,18 @@
 {
   "projectName": "test-pro",
   "host": "test-pro.app.vayi.cn",
-  "jobs": [],
+  "jobs": [
+    {
+      "name": "migrate",
+      "image": "test-pro",
+      "command": ["python", "-c"],
+      "args": [
+        "import sqlite3; connection = sqlite3.connect(':memory:'); connection.execute('SELECT 1'); print('migration check: SELECT 1 OK'); connection.close()"
+      ],
+      "backoffLimit": 1,
+      "ttlSecondsAfterFinished": 300
+    }
+  ],
   "services": [
     {
       "name": "app",

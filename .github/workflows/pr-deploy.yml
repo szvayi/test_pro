@@ -234,13 +234,13 @@ jobs:
       - name: Trigger PR Kestra deployment
         id: trigger
         env:
-          KESTRA_PR_WEBHOOK_URL: ${{ secrets.KESTRA_PR_WEBHOOK_URL }}
+          KESTRA_WEBHOOK_URL: ${{ secrets.KESTRA_WEBHOOK_URL }}
         run: |
           set -euo pipefail
-          test -n "$KESTRA_PR_WEBHOOK_URL"
+          test -n "$KESTRA_WEBHOOK_URL"
 
           response=$(curl --fail-with-body -sS \
-            -X POST "$KESTRA_PR_WEBHOOK_URL" \
+            -X POST "$KESTRA_WEBHOOK_URL" \
             -H "Content-Type: application/json" \
             --data-binary @deploy-payload.json)
 
@@ -323,7 +323,7 @@ jobs:
 
       - name: Trigger PR Kestra cleanup
         env:
-          KESTRA_PR_WEBHOOK_URL: ${{ secrets.KESTRA_PR_WEBHOOK_URL }}
+          KESTRA_WEBHOOK_URL: ${{ secrets.KESTRA_WEBHOOK_URL }}
           KESTRA_API_URL: https://kestra.vayi.cn
           KESTRA_USER: ${{ secrets.KESTRA_USER }}
           KESTRA_PASSWORD: ${{ secrets.KESTRA_PASSWORD }}
@@ -331,7 +331,7 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          test -n "$KESTRA_PR_WEBHOOK_URL"
+          test -n "$KESTRA_WEBHOOK_URL"
           test -n "$KESTRA_USER"
           test -n "$KESTRA_PASSWORD"
 
@@ -358,7 +358,7 @@ jobs:
 
           jq . cleanup-payload.json
           response=$(curl --fail-with-body -sS \
-            -X POST "$KESTRA_PR_WEBHOOK_URL" \
+            -X POST "$KESTRA_WEBHOOK_URL" \
             -H "Content-Type: application/json" \
             --data-binary @cleanup-payload.json)
 
