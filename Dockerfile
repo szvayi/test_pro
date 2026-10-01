@@ -9,19 +9,19 @@ RUN --mount=type=cache,target=/root/.npm npm ci --prefer-offline --no-audit --no
 COPY web/ ./
 RUN npm run build
 
-# Stage 2: run FastAPI and serve the built Vue application.
-FROM python:3.12-slim
+# Stage 2: install locked Python dependencies and run FastAPI.
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
 WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    PATH="/app/.venv/bin:$PATH"
 
-COPY pyproject.toml ./
-RUN pip install --no-cache-dir \
-    "fastapi>=0.115.0" \
-    "asyncpg>=0.30.0" \
-    "sqlalchemy>=2.0.0" \
-    "uvicorn[standard]>=0.30.0"
+COPY pyproject.toml uv.lock ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-install-project
 
 COPY main.py ./
 COPY database.py ./
