@@ -253,7 +253,7 @@ jobs:
           set -euo pipefail
           test -n "$KESTRA_BASE_URL"
           test -n "$KESTRA_WEBHOOK_KEY"
-          webhook_url="${KESTRA_BASE_URL%/}/api/v1/main/executions/webhook/vayi.it/vayi_app_pr_deploy/${KESTRA_WEBHOOK_KEY}"
+          webhook_url="${KESTRA_BASE_URL%/}/api/v1/executions/webhook/vayi.it/vayi_app_pr_deploy/${KESTRA_WEBHOOK_KEY}"
 
           response=$(curl --fail-with-body -sS \
             -X POST "$webhook_url" \
@@ -372,7 +372,7 @@ jobs:
             }' > cleanup-payload.json
 
           jq . cleanup-payload.json
-          webhook_url="${KESTRA_BASE_URL%/}/api/v1/main/executions/webhook/vayi.it/vayi_app_pr_cleanup/${KESTRA_WEBHOOK_KEY}"
+          webhook_url="${KESTRA_BASE_URL%/}/api/v1/executions/webhook/vayi.it/vayi_app_pr_cleanup/${KESTRA_WEBHOOK_KEY}"
           response=$(curl --fail-with-body -sS \
             -X POST "$webhook_url" \
             -H "Content-Type: application/json" \
