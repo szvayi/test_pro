@@ -204,6 +204,7 @@ jobs:
                 namespace: $namespace,
                 host: $host,
                 runtimeSecretName: (.runtimeSecretName | sub("^" + $base_project_name; $project_name)),
+                prRuntimeSecretSourceName: .prRuntimeSecretSourceName,
                 environment: $environment,
                 prNumber: $pr_number,
                 commitSha: $commit_sha,
@@ -224,6 +225,7 @@ jobs:
             (.namespace | type == "string") and
             (.host | type == "string") and
             (.runtimeSecretName | type == "string") and
+            (.prRuntimeSecretSourceName | type == "string") and
             (.services | length >= 1) and
             (.jobs | type == "array") and
             all(.services[];
