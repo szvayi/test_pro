@@ -14,7 +14,7 @@ concurrency:
 env:
   REGISTRY: swr.cn-south-1.myhuaweicloud.com
   IMAGE_NAMESPACE: vayi
-  KESTRA_BASE_URL: ${{ vars.KESTRA_BASE_URL }}
+  KESTRA_BASE_URL: ${{ secrets.KESTRA_BASE_URL }}
 
 jobs:
   prepare:
