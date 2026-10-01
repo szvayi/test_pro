@@ -82,3 +82,11 @@ if __name__ == '__main__':
     import uvicorn
 
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
+#
+# kubectl create secret generic test-pro-backend-runtime
+#   --from-env-file=.env
+#   --namespace=vy-apps
+#   --dry-run=client
+#   -o yaml |
+# kubectl apply -f -

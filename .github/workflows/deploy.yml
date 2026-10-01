@@ -109,11 +109,18 @@ jobs:
         with:
           context: ./${{ matrix.context }}
           file: ./${{ matrix.dockerfile }}
-          push: true
+          push: false
+          load: true
           provenance: false
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}:${{ needs.prepare.outputs.image_tag }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+      - name: Push image to SWR
+        timeout-minutes: 10
+        env:
+          IMAGE_REF: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}:${{ needs.prepare.outputs.image_tag }}
+        run: docker push "$IMAGE_REF"
 
   deploy:
     name: Deploy to Kubernetes
@@ -139,6 +146,7 @@ jobs:
             '{
               projectName: .projectName,
               host: .host,
+              runtimeSecretName: .runtimeSecretName,
               jobs: [
                 (.jobs // [])[] as $job
                 | ($job | del(.image)
@@ -160,6 +168,7 @@ jobs:
           jq -e '
             (.projectName | type == "string") and
             (.host | type == "string") and
+            (.runtimeSecretName | type == "string") and
             (.services | length >= 1) and
             (.jobs | type == "array") and
             all(.services[];

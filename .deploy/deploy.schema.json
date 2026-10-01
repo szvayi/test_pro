@@ -2,10 +2,11 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
-  "required": ["projectName", "host", "services"],
+  "required": ["projectName", "host", "runtimeSecretName", "services"],
   "properties": {
     "projectName": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" },
     "host": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?\\.app\\.vayi\\.cn$" },
+    "runtimeSecretName": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" },
     "services": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/service" } },
     "jobs": { "type": "array", "items": { "$ref": "#/$defs/job" } }
   },

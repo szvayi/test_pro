@@ -1,13 +1,14 @@
 {
   "projectName": "test-pro",
   "host": "test-pro.app.vayi.cn",
+  "runtimeSecretName": "test-pro-backend-runtime",
   "jobs": [
     {
       "name": "migrate",
       "image": "test-pro",
       "command": ["python", "-c"],
       "args": [
-        "import sqlite3; connection = sqlite3.connect(':memory:'); connection.execute('SELECT 1'); print('migration check: SELECT 1 OK'); connection.close()"
+        "exec(\"import asyncio, os, asyncpg\\nasync def main():\\n    database_url = os.environ['DATABASE_URL']\\n    if database_url.startswith('postgres://'):\\n        database_url = 'postgresql://' + database_url[len('postgres://'):]\\n    connection = await asyncpg.connect(database_url)\\n    try:\\n        await connection.execute('SELECT 1')\\n        print('migration check: PostgreSQL SELECT 1 OK')\\n    finally:\\n        await connection.close()\\nasyncio.run(main())\")"
       ],
       "backoffLimit": 1,
       "ttlSecondsAfterFinished": 300
@@ -22,14 +23,7 @@
       "containerPort": 8000,
       "servicePort": 8000,
       "path": "/",
-      "expose": true,
-      "envFrom": [
-        {
-          "secretRef": {
-            "name": "test-pro-app-runtime"
-          }
-        }
-      ]
+      "expose": true
     }
   ]
 }

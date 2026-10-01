@@ -131,7 +131,8 @@ jobs:
         with:
           context: ./${{ matrix.context }}
           file: ./${{ matrix.dockerfile }}
-          push: true
+          push: false
+          load: true
           provenance: false
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}:${{ needs.prepare.outputs.image_tag }}
           cache-from: type=gha,scope=pr-image-${{ matrix.image }}
@@ -139,6 +140,12 @@ jobs:
           labels: |
             org.opencontainers.image.revision=${{ github.event.pull_request.head.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+
+      - name: Push PR image to SWR
+        timeout-minutes: 10
+        env:
+          IMAGE_REF: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}:${{ needs.prepare.outputs.image_tag }}
+        run: docker push "$IMAGE_REF"
 
   deploy:
     name: Deploy PR to Kubernetes
@@ -168,8 +175,10 @@ jobs:
           set -euo pipefail
 
           short_sha="${COMMIT_SHA:0:7}"
+          base_project_name=$(jq -r '.projectName' .deploy/deploy.json)
           jq \
             --arg project_name "$PROJECT_NAME" \
+            --arg base_project_name "$base_project_name" \
             --arg namespace "$NAMESPACE" \
             --arg host "$HOST" \
             --arg environment "pr" \
@@ -194,6 +203,7 @@ jobs:
                 projectName: $project_name,
                 namespace: $namespace,
                 host: $host,
+                runtimeSecretName: (.runtimeSecretName | sub("^" + $base_project_name; $project_name)),
                 environment: $environment,
                 prNumber: $pr_number,
                 commitSha: $commit_sha,
@@ -213,6 +223,7 @@ jobs:
             (.projectName | type == "string") and
             (.namespace | type == "string") and
             (.host | type == "string") and
+            (.runtimeSecretName | type == "string") and
             (.services | length >= 1) and
             (.jobs | type == "array") and
             all(.services[];
