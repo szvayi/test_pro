@@ -75,16 +75,14 @@ jobs:
           short_sha="${PR_HEAD_SHA:0:7}"
           base_project_name=$(jq -r '.projectName' .deploy/deploy.json)
           base_branch_project_name=$(git show "$BASE_SHA:.deploy/deploy.json" | jq -r '.projectName')
-          base_pr_runtime_secret_source_name=$(git show "$BASE_SHA:.deploy/deploy.json" | jq -r '.prRuntimeSecretSourceName')
           pr_runtime_secret_source_name=$(jq -r '.prRuntimeSecretSourceName' .deploy/deploy.json)
           test "$base_project_name" != "null"
           test "$base_branch_project_name" != "null"
-          test "$base_pr_runtime_secret_source_name" != "null"
           test "$pr_runtime_secret_source_name" != "null"
           test -n "$base_project_name"
+          test -n "$pr_runtime_secret_source_name"
           test "$base_project_name" = "$base_branch_project_name"
-          test "$pr_runtime_secret_source_name" = "$base_pr_runtime_secret_source_name"
-          [[ "$base_pr_runtime_secret_source_name" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]
+          [[ "$pr_runtime_secret_source_name" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]
           [[ "$base_project_name" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]
 
           project_name="${base_project_name}-pr-${PR_NUMBER}"
@@ -104,7 +102,7 @@ jobs:
           printf 'host=%s\n' "$host" >> "$GITHUB_OUTPUT"
           printf 'image_tag=%s\n' "$image_tag" >> "$GITHUB_OUTPUT"
           printf 'matrix=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
-          printf 'pr_runtime_secret_source_name=%s\n' "$base_pr_runtime_secret_source_name" >> "$GITHUB_OUTPUT"
+          printf 'pr_runtime_secret_source_name=%s\n' "$pr_runtime_secret_source_name" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build and push PR image
