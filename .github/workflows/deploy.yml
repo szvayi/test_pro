@@ -15,7 +15,7 @@ concurrency:
 env:
   REGISTRY: swr.cn-south-1.myhuaweicloud.com
   IMAGE_NAMESPACE: vayi
-  KESTRA_API_URL: https://kestra.vayi.cn
+  DEPLOY_API_URL: ${{ secrets.DEPLOY_API_URL }}
 
 jobs:
   prepare:
@@ -132,7 +132,7 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
-      - name: Generate Kestra payload
+      - name: Generate deployment payload
         env:
           IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
         shell: bash
@@ -144,9 +144,12 @@ jobs:
             --arg namespace "$IMAGE_NAMESPACE" \
             --arg tag "$IMAGE_TAG" \
             '{
+              operation: "deploy",
               projectName: .projectName,
               host: .host,
               runtimeSecretName: .runtimeSecretName,
+              environment: "production",
+              commitSha: $tag,
               jobs: [
                 (.jobs // [])[] as $job
                 | ($job | del(.image)
@@ -188,56 +191,21 @@ jobs:
 
           jq . deploy-payload.json
 
-      - name: Trigger Kestra deployment
-        id: trigger
+      - name: Deploy through vayi-app API
         env:
-          KESTRA_WEBHOOK_URL: ${{ secrets.KESTRA_WEBHOOK_URL }}
+          DEPLOY_API_KEY: ${{ secrets.DEPLOY_API_KEY }}
         shell: bash
         run: |
           set -euo pipefail
+          test -n "$DEPLOY_API_URL"
+          test -n "$DEPLOY_API_KEY"
 
           response=$(curl --fail-with-body -sS \
-            -X POST "$KESTRA_WEBHOOK_URL" \
+            -X POST "${DEPLOY_API_URL%/}/api/v1/deploy/release" \
+            -H "X-API-Key: $DEPLOY_API_KEY" \
             -H "Content-Type: application/json" \
             --data-binary @deploy-payload.json)
-
-          execution_id=$(echo "$response" | jq -r '.id // .executionId')
-          test -n "$execution_id"
-          test "$execution_id" != "null"
-          echo "execution_id=$execution_id" >> "$GITHUB_OUTPUT"
-
-      - name: Wait for Kestra deployment
-        env:
-          EXECUTION_ID: ${{ steps.trigger.outputs.execution_id }}
-          KESTRA_USER: ${{ secrets.KESTRA_USER }}
-          KESTRA_PASSWORD: ${{ secrets.KESTRA_PASSWORD }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          for attempt in $(seq 1 120); do
-            execution=$(curl --fail-with-body -sS \
-              --user "$KESTRA_USER:$KESTRA_PASSWORD" \
-              "$KESTRA_API_URL/api/v1/main/executions/$EXECUTION_ID")
-            state=$(echo "$execution" | jq -r '.state.current // empty')
-            echo "Kestra state ($attempt/120): ${state:-UNKNOWN}"
-
-            case "$state" in
-              SUCCESS)
-                exit 0
-                ;;
-              FAILED|CANCELLED|KILLED|WARNING)
-                curl --fail-with-body -sS \
-                  --user "$KESTRA_USER:$KESTRA_PASSWORD" \
-                  "$KESTRA_API_URL/api/v1/main/logs/$EXECUTION_ID" | jq .
-                exit 1
-                ;;
-            esac
-            sleep 5
-          done
-
-          echo "Timed out waiting for Kestra execution: $EXECUTION_ID"
-          exit 1
+          echo "$response" | jq .
 
       - name: Verify deployed application
         env:

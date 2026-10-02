@@ -1,12 +1,12 @@
 """Database engine and session helpers.
 
-The deployment contract uses DATADASE_URL as the primary environment variable
-name. DATABASE_URL is also accepted as a compatibility fallback.
+The runtime Secret provides DATABASE_URL and SCHEMA_NAME.
 """
 
 from collections.abc import AsyncGenerator
 from functools import lru_cache
 import os
+import re
 
 from fastapi import HTTPException, status
 from sqlalchemy import text
@@ -34,6 +34,14 @@ def get_database_url() -> str | None:
     return database_url
 
 
+def get_schema_name() -> str:
+    """Read and validate the PostgreSQL schema used by the application."""
+    schema_name = os.getenv("SCHEMA_NAME", "public")
+    if not re.fullmatch(r"[a-z_][a-z0-9_]*", schema_name):
+        raise ValueError(f"Invalid schema name: {schema_name!r}")
+    return schema_name
+
+
 @lru_cache(maxsize=1)
 def get_engine() -> AsyncEngine | None:
     """Create one process-wide engine when a database URL is configured."""
@@ -41,7 +49,11 @@ def get_engine() -> AsyncEngine | None:
     if not database_url:
         return None
 
-    return create_async_engine(database_url, pool_pre_ping=True)
+    return create_async_engine(
+        database_url,
+        connect_args={"server_settings": {"search_path": get_schema_name()}},
+        pool_pre_ping=True,
+    )
 
 
 async def check_database_connection() -> bool:
