@@ -14,7 +14,7 @@ concurrency:
 env:
   REGISTRY: swr.cn-south-1.myhuaweicloud.com
   IMAGE_NAMESPACE: vayi
-  KESTRA_BASE_URL: ${{ secrets.KESTRA_BASE_URL }}
+  DEPLOY_API_URL: ${{ secrets.DEPLOY_API_URL }}
 
 jobs:
   prepare:
@@ -28,6 +28,7 @@ jobs:
       host: ${{ steps.metadata.outputs.host }}
       image_tag: ${{ steps.metadata.outputs.image_tag }}
       matrix: ${{ steps.metadata.outputs.matrix }}
+      pr_runtime_secret_source_name: ${{ steps.metadata.outputs.pr_runtime_secret_source_name }}
 
     steps:
       - name: Check out PR source
@@ -74,10 +75,16 @@ jobs:
           short_sha="${PR_HEAD_SHA:0:7}"
           base_project_name=$(jq -r '.projectName' .deploy/deploy.json)
           base_branch_project_name=$(git show "$BASE_SHA:.deploy/deploy.json" | jq -r '.projectName')
+          base_pr_runtime_secret_source_name=$(git show "$BASE_SHA:.deploy/deploy.json" | jq -r '.prRuntimeSecretSourceName')
+          pr_runtime_secret_source_name=$(jq -r '.prRuntimeSecretSourceName' .deploy/deploy.json)
           test "$base_project_name" != "null"
           test "$base_branch_project_name" != "null"
+          test "$base_pr_runtime_secret_source_name" != "null"
+          test "$pr_runtime_secret_source_name" != "null"
           test -n "$base_project_name"
           test "$base_project_name" = "$base_branch_project_name"
+          test "$pr_runtime_secret_source_name" = "$base_pr_runtime_secret_source_name"
+          [[ "$base_pr_runtime_secret_source_name" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]
           [[ "$base_project_name" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]
 
           project_name="${base_project_name}-pr-${PR_NUMBER}"
@@ -97,6 +104,7 @@ jobs:
           printf 'host=%s\n' "$host" >> "$GITHUB_OUTPUT"
           printf 'image_tag=%s\n' "$image_tag" >> "$GITHUB_OUTPUT"
           printf 'matrix=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
+          printf 'pr_runtime_secret_source_name=%s\n' "$base_pr_runtime_secret_source_name" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build and push PR image
@@ -106,7 +114,6 @@ jobs:
     needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    environment: test
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
@@ -156,7 +163,6 @@ jobs:
     needs: [prepare, build]
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    environment: test
 
     steps:
       - name: Check out PR source
@@ -172,14 +178,13 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
           IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
+          PR_RUNTIME_SECRET_SOURCE_NAME: ${{ needs.prepare.outputs.pr_runtime_secret_source_name }}
         run: |
           set -euo pipefail
 
           short_sha="${COMMIT_SHA:0:7}"
-          base_project_name=$(jq -r '.projectName' .deploy/deploy.json)
           jq \
             --arg project_name "$PROJECT_NAME" \
-            --arg base_project_name "$base_project_name" \
             --arg namespace "$NAMESPACE" \
             --arg host "$HOST" \
             --arg environment "pr" \
@@ -188,6 +193,7 @@ jobs:
             --arg registry "$REGISTRY" \
             --arg image_namespace "$IMAGE_NAMESPACE" \
             --arg tag "$IMAGE_TAG" \
+            --arg pr_runtime_secret_source_name "$PR_RUNTIME_SECRET_SOURCE_NAME" \
             '(
               .services
               | map(
@@ -204,8 +210,8 @@ jobs:
                 projectName: $project_name,
                 namespace: $namespace,
                 host: $host,
-                runtimeSecretName: (.runtimeSecretName | sub("^" + $base_project_name; $project_name)),
-                prRuntimeSecretSourceName: .prRuntimeSecretSourceName,
+                runtimeSecretName: $pr_runtime_secret_source_name,
+                prRuntimeSecretSourceName: $pr_runtime_secret_source_name,
                 environment: $environment,
                 prNumber: $pr_number,
                 commitSha: $commit_sha,
@@ -245,59 +251,20 @@ jobs:
           ' deploy-payload.json >/dev/null
           jq . deploy-payload.json
 
-      - name: Trigger PR Kestra deployment
-        id: trigger
+      - name: Deploy PR through vayi-app API
         env:
-          KESTRA_WEBHOOK_KEY: ${{ secrets.KESTRA_WEBHOOK_KEY }}
+          DEPLOY_API_KEY: ${{ secrets.DEPLOY_API_KEY }}
         run: |
           set -euo pipefail
-          test -n "$KESTRA_BASE_URL"
-          test -n "$KESTRA_WEBHOOK_KEY"
-          webhook_url="${KESTRA_BASE_URL%/}/api/v1/executions/webhook/vayi.it/vayi_app_pr_deploy/${KESTRA_WEBHOOK_KEY}"
+          test -n "$DEPLOY_API_URL"
+          test -n "$DEPLOY_API_KEY"
 
           response=$(curl --fail-with-body -sS \
-            -X POST "$webhook_url" \
+            -X POST "${DEPLOY_API_URL%/}/api/v1/deploy/pr" \
+            -H "X-API-Key: $DEPLOY_API_KEY" \
             -H "Content-Type: application/json" \
             --data-binary @deploy-payload.json)
-
-          execution_id=$(echo "$response" | jq -r '.id // .executionId')
-          test -n "$execution_id"
-          test "$execution_id" != "null"
-          echo "execution_id=$execution_id" >> "$GITHUB_OUTPUT"
-
-      - name: Wait for PR Kestra deployment
-        env:
-          EXECUTION_ID: ${{ steps.trigger.outputs.execution_id }}
-          KESTRA_USER: ${{ secrets.KESTRA_USER }}
-          KESTRA_PASSWORD: ${{ secrets.KESTRA_PASSWORD }}
-        run: |
-          set -euo pipefail
-          test -n "$KESTRA_USER"
-          test -n "$KESTRA_PASSWORD"
-
-          for attempt in $(seq 1 120); do
-            execution=$(curl --fail-with-body -sS \
-              --user "$KESTRA_USER:$KESTRA_PASSWORD" \
-              "$KESTRA_BASE_URL/api/v1/main/executions/$EXECUTION_ID")
-            state=$(echo "$execution" | jq -r '.state.current // empty')
-            echo "Kestra state ($attempt/120): ${state:-UNKNOWN}"
-
-            case "$state" in
-              SUCCESS)
-                exit 0
-                ;;
-              FAILED|CANCELLED|KILLED|WARNING)
-                curl --fail-with-body -sS \
-                  --user "$KESTRA_USER:$KESTRA_PASSWORD" \
-                  "$KESTRA_BASE_URL/api/v1/main/logs/$EXECUTION_ID" | jq .
-                exit 1
-                ;;
-            esac
-            sleep 5
-          done
-
-          echo "Timed out waiting for Kestra execution: $EXECUTION_ID"
-          exit 1
+          echo "$response" | jq .
 
       - name: Verify PR application
         env:
@@ -327,8 +294,6 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    environment: test
-
     steps:
       - name: Check out PR source
         uses: actions/checkout@v4
@@ -336,72 +301,19 @@ jobs:
           ref: ${{ github.event.pull_request.base.sha }}
           fetch-depth: 1
 
-      - name: Trigger PR Kestra cleanup
+      - name: Clean up through vayi-app API
         env:
-          KESTRA_WEBHOOK_KEY: ${{ secrets.KESTRA_WEBHOOK_KEY }}
-          KESTRA_USER: ${{ secrets.KESTRA_USER }}
-          KESTRA_PASSWORD: ${{ secrets.KESTRA_PASSWORD }}
+          DEPLOY_API_KEY: ${{ secrets.DEPLOY_API_KEY }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          test -n "$KESTRA_BASE_URL"
-          test -n "$KESTRA_WEBHOOK_KEY"
-          test -n "$KESTRA_USER"
-          test -n "$KESTRA_PASSWORD"
-
-          short_sha="${PR_HEAD_SHA:0:7}"
+          test -n "$DEPLOY_API_URL"
+          test -n "$DEPLOY_API_KEY"
           base_project_name=$(jq -r '.projectName' .deploy/deploy.json)
           test "$base_project_name" != "null"
           test -n "$base_project_name"
           project_name="${base_project_name}-pr-${PR_NUMBER}"
-          namespace="vayi-pr-${PR_NUMBER}"
-
-          jq -n \
-            --arg project_name "$project_name" \
-            --arg namespace "$namespace" \
-            --argjson pr_number "$PR_NUMBER" \
-            --arg commit_sha "$short_sha" \
-            '{
-              operation: "cleanup",
-              projectName: $project_name,
-              namespace: $namespace,
-              environment: "pr",
-              prNumber: $pr_number,
-              commitSha: $commit_sha
-            }' > cleanup-payload.json
-
-          jq . cleanup-payload.json
-          webhook_url="${KESTRA_BASE_URL%/}/api/v1/executions/webhook/vayi.it/vayi_app_pr_cleanup/${KESTRA_WEBHOOK_KEY}"
           response=$(curl --fail-with-body -sS \
-            -X POST "$webhook_url" \
-            -H "Content-Type: application/json" \
-            --data-binary @cleanup-payload.json)
-
-          execution_id=$(echo "$response" | jq -r '.id // .executionId')
-          test -n "$execution_id"
-          test "$execution_id" != "null"
-
-          for attempt in $(seq 1 120); do
-            execution=$(curl --fail-with-body -sS \
-              --user "$KESTRA_USER:$KESTRA_PASSWORD" \
-              "$KESTRA_BASE_URL/api/v1/main/executions/$execution_id")
-            state=$(echo "$execution" | jq -r '.state.current // empty')
-            echo "Kestra cleanup state ($attempt/120): ${state:-UNKNOWN}"
-
-            case "$state" in
-              SUCCESS)
-                exit 0
-                ;;
-              FAILED|CANCELLED|KILLED|WARNING)
-                curl --fail-with-body -sS \
-                  --user "$KESTRA_USER:$KESTRA_PASSWORD" \
-                  "$KESTRA_BASE_URL/api/v1/main/logs/$execution_id" | jq .
-                exit 1
-                ;;
-            esac
-            sleep 5
-          done
-
-          echo "Timed out waiting for Kestra cleanup: $execution_id"
-          exit 1
+            -X DELETE "${DEPLOY_API_URL%/}/api/v1/deploy/pr/${PR_NUMBER}?project_name=${project_name}" \
+            -H "X-API-Key: $DEPLOY_API_KEY")
+          echo "$response" | jq .

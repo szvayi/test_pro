@@ -1,8 +1,8 @@
 {
   "projectName": "test-pro",
   "host": "test-pro.app.vayi.cn",
-  "runtimeSecretName": "test-pro-backend-runtime",
-  "prRuntimeSecretSourceName": "test-pro-test-backend-runtime",
+  "runtimeSecretName": "test-pro-runtime",
+  "prRuntimeSecretSourceName": "test-pro-test-runtime",
   "jobs": [
     {
       "name": "migrate",
