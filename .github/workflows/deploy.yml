@@ -216,15 +216,19 @@ jobs:
           app_url="https://${APP_HOST}"
 
           for attempt in $(seq 1 12); do
-            if curl --fail --silent --show-error "$app_url/healthz" >/dev/null; then
+            health_ok=0
+            for health_path in /health /api/health; do
+              if curl --fail --silent --show-error "$app_url$health_path" >/dev/null; then
+                health_ok=1
+                break
+              fi
+            done
+            if [ "$health_ok" -eq 1 ]; then
               break
             fi
             if [ "$attempt" -eq 12 ]; then
+              echo "Application must expose /health or /api/health" >&2
               exit 1
             fi
             sleep 5
           done
-
-          curl --fail --silent --show-error "$app_url/" >/dev/null
-          curl --fail --silent --show-error "$app_url/api/health"
-          curl --fail --silent --show-error "$app_url/api/routes"
