@@ -86,7 +86,7 @@ jobs:
           [[ "$base_project_name" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]
 
           project_name="${base_project_name}-pr-${PR_NUMBER}"
-          namespace="vayi-pr-${PR_NUMBER}"
+          namespace="vy-${project_name}"
           host="${project_name}.app.vayi.cn"
           image_tag="pr-${PR_NUMBER}-${short_sha}"
           matrix=$(jq -c '{include: .services}' .deploy/deploy.json)
