@@ -60,12 +60,28 @@ jobs:
 
           while IFS= read -r job; do
             job_image=$(jq -r '.image' <<< "$job")
-            jq -e --arg image "$job_image" \
+            if jq -e --arg image "$job_image" \
               'any(.services[]; .image == $image)' \
-              .deploy/deploy.json >/dev/null
+              .deploy/deploy.json >/dev/null; then
+              continue
+            fi
+            context=$(jq -r '.context // empty' <<< "$job")
+            dockerfile=$(jq -r '.dockerfile // empty' <<< "$job")
+            test -n "$context"
+            test -n "$dockerfile"
+            test -d "$context"
+            test -f "$dockerfile"
           done < <(jq -c '(.jobs // [])[]' .deploy/deploy.json)
 
-          matrix=$(jq -c '{include: .services}' .deploy/deploy.json)
+          matrix=$(jq -c '
+            . as $root
+            | ([.services[] | {name, context, dockerfile, image}]
+              + [(.jobs // [])[]
+                | select((.image as $image | any($root.services[]; .image == $image)) | not)
+                | {name, context, dockerfile, image}])
+            | unique_by(.image)
+            | {include: .}
+          ' .deploy/deploy.json)
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "host=$(jq -r '.host' .deploy/deploy.json)" >> "$GITHUB_OUTPUT"
 
@@ -147,12 +163,11 @@ jobs:
               operation: "deploy",
               projectName: .projectName,
               host: .host,
-              runtimeSecretName: .runtimeSecretName,
               environment: "production",
               commitSha: $tag,
               jobs: [
-                (.jobs // [])[] as $job
-                | ($job | del(.image)
+                  (.jobs // [])[] as $job
+                  | ($job | del(.context, .dockerfile, .image)
                   | .image = {
                       repository: ($registry + "/" + $namespace + "/" + $job.image),
                       tag: $tag
@@ -171,7 +186,6 @@ jobs:
           jq -e '
             (.projectName | type == "string") and
             (.host | type == "string") and
-            (.runtimeSecretName | type == "string") and
             (.services | length >= 1) and
             (.jobs | type == "array") and
             all(.services[];

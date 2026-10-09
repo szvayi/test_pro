@@ -24,11 +24,9 @@ jobs:
     timeout-minutes: 10
     outputs:
       project_name: ${{ steps.metadata.outputs.project_name }}
-      namespace: ${{ steps.metadata.outputs.namespace }}
       host: ${{ steps.metadata.outputs.host }}
       image_tag: ${{ steps.metadata.outputs.image_tag }}
       matrix: ${{ steps.metadata.outputs.matrix }}
-      pr_runtime_secret_source_name: ${{ steps.metadata.outputs.pr_runtime_secret_source_name }}
 
     steps:
       - name: Check out PR source
@@ -58,9 +56,17 @@ jobs:
 
           while IFS= read -r job; do
             job_image=$(jq -r '.image' <<< "$job")
-            jq -e --arg image "$job_image" \
+            if jq -e --arg image "$job_image" \
               'any(.services[]; .image == $image)' \
-              .deploy/deploy.json >/dev/null
+              .deploy/deploy.json >/dev/null; then
+              continue
+            fi
+            context=$(jq -r '.context // empty' <<< "$job")
+            dockerfile=$(jq -r '.dockerfile // empty' <<< "$job")
+            test -n "$context"
+            test -n "$dockerfile"
+            test -d "$context"
+            test -f "$dockerfile"
           done < <(jq -c '(.jobs // [])[]' .deploy/deploy.json)
 
       - name: Calculate PR deployment metadata
@@ -75,34 +81,33 @@ jobs:
           short_sha="${PR_HEAD_SHA:0:7}"
           base_project_name=$(jq -r '.projectName' .deploy/deploy.json)
           base_branch_project_name=$(git show "$BASE_SHA:.deploy/deploy.json" | jq -r '.projectName')
-          pr_runtime_secret_source_name=$(jq -r '.prRuntimeSecretSourceName' .deploy/deploy.json)
           test "$base_project_name" != "null"
           test "$base_branch_project_name" != "null"
-          test "$pr_runtime_secret_source_name" != "null"
           test -n "$base_project_name"
-          test -n "$pr_runtime_secret_source_name"
           test "$base_project_name" = "$base_branch_project_name"
-          [[ "$pr_runtime_secret_source_name" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]
           [[ "$base_project_name" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]
 
           project_name="${base_project_name}-pr-${PR_NUMBER}"
-          namespace="vy-${project_name}"
           host="${project_name}.app.vayi.cn"
           image_tag="pr-${PR_NUMBER}-${short_sha}"
-          matrix=$(jq -c '{include: .services}' .deploy/deploy.json)
+          matrix=$(jq -c '
+            . as $root
+            | ([.services[] | {name, context, dockerfile, image}]
+              + [(.jobs // [])[]
+                | select((.image as $image | any($root.services[]; .image == $image)) | not)
+                | {name, context, dockerfile, image}])
+            | unique_by(.image)
+            | {include: .}
+          ' .deploy/deploy.json)
 
           [[ "$project_name" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]
-          [[ "$namespace" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]
           [[ "$host" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?\.app\.vayi\.cn$ ]]
           test "${#project_name}" -le 63
-          test "${#namespace}" -le 63
 
           printf 'project_name=%s\n' "$project_name" >> "$GITHUB_OUTPUT"
-          printf 'namespace=%s\n' "$namespace" >> "$GITHUB_OUTPUT"
           printf 'host=%s\n' "$host" >> "$GITHUB_OUTPUT"
           printf 'image_tag=%s\n' "$image_tag" >> "$GITHUB_OUTPUT"
           printf 'matrix=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
-          printf 'pr_runtime_secret_source_name=%s\n' "$pr_runtime_secret_source_name" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build and push PR image
@@ -171,19 +176,16 @@ jobs:
       - name: Generate PR deployment payload
         env:
           PROJECT_NAME: ${{ needs.prepare.outputs.project_name }}
-          NAMESPACE: ${{ needs.prepare.outputs.namespace }}
           HOST: ${{ needs.prepare.outputs.host }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
           IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
-          PR_RUNTIME_SECRET_SOURCE_NAME: ${{ needs.prepare.outputs.pr_runtime_secret_source_name }}
         run: |
           set -euo pipefail
 
           short_sha="${COMMIT_SHA:0:7}"
           jq \
             --arg project_name "$PROJECT_NAME" \
-            --arg namespace "$NAMESPACE" \
             --arg host "$HOST" \
             --arg environment "pr" \
             --argjson pr_number "$PR_NUMBER" \
@@ -191,7 +193,6 @@ jobs:
             --arg registry "$REGISTRY" \
             --arg image_namespace "$IMAGE_NAMESPACE" \
             --arg tag "$IMAGE_TAG" \
-            --arg pr_runtime_secret_source_name "$PR_RUNTIME_SECRET_SOURCE_NAME" \
             '(
               .services
               | map(
@@ -206,17 +207,14 @@ jobs:
             | {
                 operation: "deploy",
                 projectName: $project_name,
-                namespace: $namespace,
                 host: $host,
-                runtimeSecretName: $pr_runtime_secret_source_name,
-                prRuntimeSecretSourceName: $pr_runtime_secret_source_name,
                 environment: $environment,
                 prNumber: $pr_number,
                 commitSha: $commit_sha,
                 services: $services,
                 jobs: [
                   (.jobs // [])[] as $job
-                  | ($job | del(.image)
+                  | ($job | del(.context, .dockerfile, .image)
                     | .image = {
                         repository: ($registry + "/" + $image_namespace + "/" + $job.image),
                         tag: $tag
@@ -227,10 +225,7 @@ jobs:
           jq -e '
             .operation == "deploy" and
             (.projectName | type == "string") and
-            (.namespace | type == "string") and
             (.host | type == "string") and
-            (.runtimeSecretName | type == "string") and
-            (.prRuntimeSecretSourceName | type == "string") and
             (.services | length >= 1) and
             (.jobs | type == "array") and
             all(.services[];

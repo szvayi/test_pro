@@ -2,12 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
-  "required": ["projectName", "host", "runtimeSecretName", "prRuntimeSecretSourceName", "services"],
+  "required": ["projectName", "host", "services"],
   "properties": {
     "projectName": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" },
     "host": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?\\.app\\.vayi\\.cn$" },
-    "runtimeSecretName": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" },
-    "prRuntimeSecretSourceName": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" },
     "services": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/service" } },
     "jobs": { "type": "array", "items": { "$ref": "#/$defs/job" } }
   },
@@ -41,6 +39,8 @@
       "properties": {
         "name": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" },
         "image": { "type": "string", "minLength": 1 },
+        "context": { "type": "string", "minLength": 1 },
+        "dockerfile": { "type": "string", "minLength": 1 },
         "command": { "type": "array", "items": { "type": "string" } },
         "args": { "type": "array", "items": { "type": "string" } },
         "env": { "type": "array" },
